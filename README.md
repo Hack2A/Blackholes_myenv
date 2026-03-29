@@ -1,3 +1,12 @@
+---
+title: Blackholes Myenv
+emoji: 🚀
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
+
 # Blackholes_myenv
 
 A production-grade OpenEnv environment that simulates multi-round technical interviews for evaluating AI agents on reasoning, memory, and decision-making.
