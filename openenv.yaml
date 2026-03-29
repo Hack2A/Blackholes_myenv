@@ -1,0 +1,36 @@
+name: Blackholes_myenv
+description: Multi-round technical interview simulation environment for evaluating AI agents on reasoning, memory, and decision-making in a hiring scenario.
+version: "1.0.0"
+author: Blackholes
+tags:
+  - interview
+  - evaluation
+  - reasoning
+  - memory
+  - decision-making
+  - hiring
+tasks:
+  - id: easy
+    description: Single-round interview evaluation with scoring and topic detection.
+    max_rounds: 1
+  - id: medium
+    description: Two-round interview with follow-up question selection targeting weak areas.
+    max_rounds: 2
+  - id: hard
+    description: Full four-round interview with memory, consistency tracking, and final hire/reject decision.
+    max_rounds: 4
+api:
+  reset:
+    method: POST
+    path: /reset
+    request_body: ResetRequest
+    response: Observation
+  step:
+    method: POST
+    path: /step
+    request_body: StepRequest
+    response: StepResult
+  state:
+    method: GET
+    path: /state
+    response: InterviewState
