@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "Blackholes_myenv"
+version = "1.0.0"
+description = "Multi-round technical interview simulation environment for evaluating AI agents on reasoning, memory, and decision-making in a hiring scenario."
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn==0.34.0",
+    "pydantic==2.10.4",
+    "openai==1.58.1",
+    "requests==2.32.3",
+]
+
+[project.scripts]
+start = "uvicorn app:app --host 0.0.0.0 --port 7860"
