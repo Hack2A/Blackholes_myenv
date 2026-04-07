@@ -41,6 +41,9 @@ Respond ONLY with the JSON object, no other text."""
 
 
 def run_agent_on_task(task_id: str) -> dict:
+    # ---- [START] structured output for the validator ----
+    print(f"[START] task={task_id}", flush=True)
+
     reset_response = requests.post(
         f"{API_BASE_URL}/reset",
         json={"task_id": task_id},
@@ -114,9 +117,15 @@ def run_agent_on_task(task_id: str) -> dict:
         total_reward += reward
         steps += 1
 
-        print(f"  Round {steps}: score={action['evaluation_score']}, reward={reward:.4f}, decision={action['final_decision']}")
+        # ---- [STEP] structured output for the validator ----
+        print(f"[STEP] step={steps} reward={reward}", flush=True)
 
     final_info = step_result.get("info", {})
+    final_score = final_info.get("task_grade", round(total_reward, 4))
+
+    # ---- [END] structured output for the validator ----
+    print(f"[END] task={task_id} score={final_score} steps={steps}", flush=True)
+
     return {
         "task_id": task_id,
         "steps": steps,
@@ -128,36 +137,23 @@ def run_agent_on_task(task_id: str) -> dict:
 
 
 def main():
-    print("=" * 60)
-    print("Blackholes_myenv - Interview Simulation Agent")
-    print("=" * 60)
-    print(f"API Base URL: {API_BASE_URL}")
-    print(f"Model: {MODEL_NAME}")
-    print()
-
     results = {}
     for task_id in ["easy", "medium", "hard"]:
-        print(f"\n--- Task: {task_id} ---")
         try:
             result = run_agent_on_task(task_id)
             results[task_id] = result
-            print(f"  Grade: {result['task_grade']:.4f}")
-            print(f"  Total Reward: {result['total_reward']:.4f}")
-            print(f"  Final Decision: {result['final_decision']}")
         except Exception as e:
-            print(f"  Error: {str(e)}")
+            # Still emit structured output on error so the validator sees something
+            print(f"[START] task={task_id}", flush=True)
+            print(f"[STEP] step=1 reward=0.0", flush=True)
+            print(f"[END] task={task_id} score=0.0 steps=0", flush=True)
             results[task_id] = {"error": str(e)}
-
-    print("\n" + "=" * 60)
-    print("FINAL RESULTS")
-    print("=" * 60)
-    print(json.dumps(results, indent=2))
 
     output_path = "results.json"
     with open(output_path, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"\nResults saved to {output_path}")
 
 
 if __name__ == "__main__":
     main()
+
