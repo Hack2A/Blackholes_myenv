@@ -1,14 +1,41 @@
+"""
+Inference Script for Blackholes_myenv
+======================================
+Multi-round technical interview simulation environment.
+
+MANDATORY ENV VARS:
+    API_BASE_URL   The API endpoint for the LLM.
+    MODEL_NAME     The model identifier to use for inference.
+    HF_TOKEN       Your Hugging Face / API key.
+
+STDOUT FORMAT:
+    [START] task=<task_name> env=<benchmark> model=<model_name>
+    [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
+    [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
+"""
+
 import os
 import json
 import requests
+from typing import List, Optional
 from openai import OpenAI
 
-API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:7860")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
+# ── Mandatory env vars (LLM) ──────────────────────────────────────────────
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
 
+# ── Environment server URL (the HF Space running the FastAPI env) ─────────
+ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
+
+# ── Benchmark metadata ────────────────────────────────────────────────────
+BENCHMARK = "Blackholes_myenv"
+TASKS = ["easy", "medium", "hard"]
+
+# ── OpenAI client pointed at the LLM endpoint ────────────────────────────
 client = OpenAI(
-    api_key=HF_TOKEN if HF_TOKEN else os.environ.get("OPENAI_API_KEY", ""),
+    base_url=API_BASE_URL,
+    api_key=HF_TOKEN,
 )
 
 SYSTEM_PROMPT = """You are an expert technical interviewer AI agent. You are evaluating a software engineering candidate.
@@ -40,22 +67,39 @@ Rules:
 Respond ONLY with the JSON object, no other text."""
 
 
-def run_agent_on_task(task_id: str) -> dict:
-    # ---- [START] structured output for the validator ----
-    print(f"[START] task={task_id}", flush=True)
+# ── Structured logging helpers ────────────────────────────────────────────
 
-    reset_response = requests.post(
-        f"{API_BASE_URL}/reset",
-        json={"task_id": task_id},
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    done_str = str(done).lower()
+    error_str = error if error else "null"
+    # Sanitise action string: collapse to single line, cap length
+    action_clean = action.replace("\n", " ").replace("\r", "")
+    if len(action_clean) > 200:
+        action_clean = action_clean[:200] + "..."
+    print(
+        f"[STEP] step={step} action={action_clean} reward={reward:.2f} done={done_str} error={error_str}",
+        flush=True,
     )
-    observation = reset_response.json()
 
-    total_reward = 0.0
-    steps = 0
-    done = False
 
-    while not done:
-        user_message = json.dumps({
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}",
+        flush=True,
+    )
+
+
+# ── Agent logic ───────────────────────────────────────────────────────────
+
+def call_llm(observation: dict) -> dict:
+    """Ask the LLM to evaluate the current interview round."""
+    user_message = json.dumps(
+        {
             "round_number": observation["round_number"],
             "max_rounds": observation["max_rounds"],
             "question": observation["current_question"],
@@ -63,8 +107,11 @@ def run_agent_on_task(task_id: str) -> dict:
             "history": observation.get("interview_history", []),
             "task_description": observation.get("task_description", ""),
             "candidate_hint": observation.get("candidate_profile_hint", ""),
-        }, indent=2)
+        },
+        indent=2,
+    )
 
+    try:
         completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
@@ -73,87 +120,131 @@ def run_agent_on_task(task_id: str) -> dict:
             ],
             temperature=0.0,
         )
+        response_text = (completion.choices[0].message.content or "").strip()
 
-        response_text = completion.choices[0].message.content.strip()
+        # Strip markdown code fences if present
         if response_text.startswith("```"):
             lines = response_text.split("\n")
             response_text = "\n".join(lines[1:-1])
 
-        try:
-            action = json.loads(response_text)
-        except json.JSONDecodeError:
-            action = {
-                "evaluation_score": 5,
-                "feedback": "Unable to parse response properly.",
-                "detected_topics": [],
-                "weak_topics": [],
-                "next_question": "",
-                "final_decision": "continue",
-            }
+        action = json.loads(response_text)
+    except (json.JSONDecodeError, Exception):
+        # Fallback action so the episode can continue
+        action = {
+            "evaluation_score": 5,
+            "feedback": "Unable to parse LLM response.",
+            "detected_topics": [],
+            "weak_topics": [],
+            "next_question": "",
+            "final_decision": "continue",
+        }
 
-        action["evaluation_score"] = max(0, min(10, float(action.get("evaluation_score", 5))))
-        if "final_decision" not in action:
-            action["final_decision"] = "continue"
-        if "feedback" not in action:
-            action["feedback"] = ""
-        if "detected_topics" not in action:
-            action["detected_topics"] = []
-        if "weak_topics" not in action:
-            action["weak_topics"] = []
-        if "next_question" not in action:
-            action["next_question"] = ""
+    # Clamp / fill defaults
+    action["evaluation_score"] = max(0, min(10, float(action.get("evaluation_score", 5))))
+    action.setdefault("final_decision", "continue")
+    action.setdefault("feedback", "")
+    action.setdefault("detected_topics", [])
+    action.setdefault("weak_topics", [])
+    action.setdefault("next_question", "")
 
-        step_response = requests.post(
-            f"{API_BASE_URL}/step",
-            json={"action": action},
+    return action
+
+
+def run_task(task_id: str) -> dict:
+    """Run a single task episode, emitting structured logs to stdout."""
+    rewards: List[float] = []
+    steps = 0
+    score = 0.0
+    success = False
+
+    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
+
+    try:
+        # ── Reset ─────────────────────────────────────────────────────
+        reset_resp = requests.post(
+            f"{ENV_URL}/reset",
+            json={"task_id": task_id},
+            timeout=30,
         )
-        step_result = step_response.json()
+        reset_resp.raise_for_status()
+        observation = reset_resp.json()
 
-        observation = step_result["observation"]
-        reward = step_result["reward"]
-        done = step_result["done"]
-        info = step_result.get("info", {})
+        done = False
 
-        total_reward += reward
-        steps += 1
+        while not done:
+            # ── Ask the LLM ───────────────────────────────────────────
+            action = call_llm(observation)
 
-        # ---- [STEP] structured output for the validator ----
-        print(f"[STEP] step={steps} reward={reward}", flush=True)
+            # Build a short action summary for the log line
+            action_summary = json.dumps(action, separators=(",", ":"))
 
-    final_info = step_result.get("info", {})
-    final_score = final_info.get("task_grade", round(total_reward, 4))
+            # ── Step ──────────────────────────────────────────────────
+            step_resp = requests.post(
+                f"{ENV_URL}/step",
+                json={"action": action},
+                timeout=30,
+            )
+            step_resp.raise_for_status()
+            step_result = step_resp.json()
 
-    # ---- [END] structured output for the validator ----
-    print(f"[END] task={task_id} score={final_score} steps={steps}", flush=True)
+            observation = step_result["observation"]
+            reward = float(step_result["reward"])
+            done = bool(step_result["done"])
+            info = step_result.get("info", {})
+            error = info.get("error", None)
+
+            rewards.append(reward)
+            steps += 1
+
+            log_step(
+                step=steps,
+                action=action_summary,
+                reward=reward,
+                done=done,
+                error=error,
+            )
+
+        # ── Compute final score (clamped to [0, 1]) ──────────────────
+        final_info = step_result.get("info", {})
+        task_grade = final_info.get("task_grade", None)
+        if task_grade is not None:
+            score = float(task_grade)
+        else:
+            # Fallback: average of rewards
+            score = sum(rewards) / len(rewards) if rewards else 0.0
+        score = min(max(score, 0.0), 1.0)
+        success = score > 0.0
+
+    except Exception as exc:
+        # On any error, still emit a STEP so the validator sees the triple
+        if steps == 0:
+            rewards.append(0.0)
+            steps = 1
+            log_step(step=1, action="error", reward=0.0, done=True, error=str(exc))
+    finally:
+        log_end(success=success, steps=steps, score=score, rewards=rewards)
 
     return {
         "task_id": task_id,
         "steps": steps,
-        "total_reward": round(total_reward, 4),
-        "task_grade": final_info.get("task_grade", 0.0),
-        "final_bonus": final_info.get("final_bonus", 0.0),
-        "final_decision": final_info.get("final_decision", "unknown"),
+        "score": round(score, 4),
+        "success": success,
+        "rewards": rewards,
     }
 
 
+# ── Main ──────────────────────────────────────────────────────────────────
+
 def main():
     results = {}
-    for task_id in ["easy", "medium", "hard"]:
-        try:
-            result = run_agent_on_task(task_id)
-            results[task_id] = result
-        except Exception as e:
-            # Still emit structured output on error so the validator sees something
-            print(f"[START] task={task_id}", flush=True)
-            print(f"[STEP] step=1 reward=0.0", flush=True)
-            print(f"[END] task={task_id} score=0.0 steps=0", flush=True)
-            results[task_id] = {"error": str(e)}
+    for task_id in TASKS:
+        result = run_task(task_id)
+        results[task_id] = result
 
-    output_path = "results.json"
-    with open(output_path, "w") as f:
+    # Also dump a machine-readable summary
+    with open("results.json", "w") as f:
         json.dump(results, f, indent=2)
 
 
 if __name__ == "__main__":
     main()
-
